@@ -732,6 +732,19 @@ def unified_attention_with_output(
         output_block_scale=output_block_scale,
     )
 
+    # Experimental H2O: accumulate block attention mass (slow reference path).
+    # Gated by H2OScoreAccumulator.enabled; no-op when H2O is disabled.
+    from vllm.v1.attention.ops.h2o_score_collector import (
+        maybe_accumulate_h2o_scores_from_attention,
+    )
+
+    maybe_accumulate_h2o_scores_from_attention(
+        query,
+        kv_cache,
+        attn_metadata,
+        scale=float(getattr(self.impl, "scale", 1.0)),
+    )
+
 
 def unified_attention_with_output_fake(
     query: torch.Tensor,

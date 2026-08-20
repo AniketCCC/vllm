@@ -425,6 +425,42 @@ class SingleTypeKVCacheManager(ABC):
             blocks[i] = self._null_block
         self.block_pool.free_blocks(removed_blocks)
 
+    def evict_logical_blocks(
+        self, request_id: str, logical_block_ids: list[int]
+    ) -> list[KVCacheBlock]:
+        """Replace selected logical blocks with null_block and free them.
+
+        Used by experimental H2O eviction. Preserves logical indices so
+        position → block_index mapping (slot_mapping / RoPE) stays valid.
+
+        Returns the physical blocks that were freed (excluding nulls).
+        """
+        if not logical_block_ids:
+            return []
+        blocks = self.req_to_blocks.get(request_id)
+        if not blocks:
+            return []
+        removed: list[KVCacheBlock] = []
+        for lid in logical_block_ids:
+            if lid < 0 or lid >= len(blocks):
+                continue
+            blk = blocks[lid]
+            if blk == self._null_block or blk.is_null:
+                continue
+            removed.append(blk)
+            blocks[lid] = self._null_block
+        if removed:
+            self.block_pool.free_blocks(removed)
+        return removed
+
+    def get_retained_logical_block_ids(self, request_id: str) -> list[int]:
+        blocks = self.req_to_blocks.get(request_id) or []
+        return [
+            i
+            for i, blk in enumerate(blocks)
+            if blk is not self._null_block and not blk.is_null
+        ]
+
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
         Get the number of tokens that will be skipped for attention computation.

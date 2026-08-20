@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING
 
@@ -111,9 +111,10 @@ class NewRequestData:
 @dataclass
 class CachedRequestData:
     req_ids: list[str]
-    # For request ids not in resumed_req_ids, new_block_ids will be appended to
-    # the request's block IDs. For those in the set, new_block_ids will be used as the
-    # request's block IDs instead of appending to the existing block IDs.
+    # For request ids not in resumed_req_ids / refresh_block_ids_req_ids,
+    # new_block_ids will be appended to the request's block IDs. For those in
+    # either set, new_block_ids will be used as the request's block IDs instead
+    # of appending to the existing block IDs.
     resumed_req_ids: set[str]
     # NOTE(woosuk): new_token_ids is only used for pipeline parallelism.
     # When PP is not used, new_token_ids will be empty.
@@ -124,6 +125,9 @@ class CachedRequestData:
     new_block_ids: list[tuple[list[int], ...] | None]
     num_computed_tokens: list[int]
     num_output_tokens: list[int]
+    # Experimental H2O: full block-table replace for running requests after
+    # eviction punched null holes into the logical block list.
+    refresh_block_ids_req_ids: set[str] = field(default_factory=set)
 
     # Version of dataclass repr with token IDs obfuscated.
     def anon_repr(self) -> str:
@@ -135,6 +139,7 @@ class CachedRequestData:
             f"CachedRequestData("
             f"req_ids={self.req_ids},"
             f"resumed_req_ids={self.resumed_req_ids},"
+            f"refresh_block_ids_req_ids={self.refresh_block_ids_req_ids},"
             f"new_token_ids_lens={new_token_ids_lens},"
             f"all_token_ids_lens={all_token_ids_lens},"
             f"new_block_ids={self.new_block_ids},"
@@ -174,6 +179,7 @@ class CachedRequestData:
             new_block_ids=[],
             num_computed_tokens=[],
             num_output_tokens=[],
+            refresh_block_ids_req_ids=set(),
         )
 
 

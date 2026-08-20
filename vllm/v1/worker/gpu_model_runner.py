@@ -411,6 +411,7 @@ class GPUModelRunner(
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
+        self.h2o_enabled = bool(self.cache_config.h2o_enabled)
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -1049,6 +1050,77 @@ class GPUModelRunner(
         if hasattr(self, "_kv_block_zeroer"):
             self._kv_block_zeroer.zero_block_ids(block_ids)
 
+    def _configure_h2o_score_collection(self, num_reqs: int) -> None:
+        """Arm experimental H2O score accumulator for this forward (or disable)."""
+        from vllm.v1.attention.ops.h2o_score_collector import get_h2o_score_accumulator
+
+        acc = get_h2o_score_accumulator()
+        if not self.h2o_enabled or num_reqs <= 0:
+            acc.enabled = False
+            acc.reset()
+            return
+        req_ids = self.input_batch.req_ids[:num_reqs]
+        query_lens = [
+            int(self.query_start_loc.cpu[i + 1] - self.query_start_loc.cpu[i])
+            for i in range(num_reqs)
+        ]
+        block_table = self.input_batch.block_table[0].get_device_tensor(num_reqs)
+        seq_lens = self.seq_lens[:num_reqs]
+        acc.enabled = True
+        acc.configure_batch(
+            req_ids=list(req_ids),
+            query_lens=query_lens,
+            block_size=self.cache_config.block_size,
+            block_tables=block_table,
+            seq_lens=seq_lens,
+        )
+
+    def _take_h2o_block_scores(self) -> dict[str, dict[int, float]] | None:
+        if not self.h2o_enabled:
+            return None
+        from vllm.v1.attention.ops.h2o_score_collector import get_h2o_score_accumulator
+
+        acc = get_h2o_score_accumulator()
+        scores = acc.snapshot()
+        acc.enabled = False
+        acc.reset()
+        return scores or None
+
+    def _maybe_compact_h2o_attn_tables(
+        self,
+        block_table_tensor: torch.Tensor,
+        seq_lens: torch.Tensor,
+        num_reqs: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compact null holes for attention; keep original positions elsewhere."""
+        if not self.h2o_enabled or num_reqs <= 0:
+            return block_table_tensor, seq_lens
+        from vllm.v1.attention.ops.h2o_score_collector import (
+            compact_block_table_for_attention,
+        )
+
+        block_size = self.cache_config.block_size
+        bt_cpu = block_table_tensor[:num_reqs].detach().to("cpu")
+        sl_cpu = seq_lens[:num_reqs].detach().to("cpu")
+        max_blocks = bt_cpu.shape[1]
+        new_bt = torch.full_like(bt_cpu, NULL_BLOCK_ID)
+        new_sl = torch.zeros_like(sl_cpu)
+        for i in range(num_reqs):
+            row = bt_cpu[i].tolist()
+            seq_len = int(sl_cpu[i].item())
+            compacted, retained = compact_block_table_for_attention(
+                row, seq_len, block_size
+            )
+            n = min(len(compacted), max_blocks)
+            if n:
+                new_bt[i, :n] = torch.tensor(compacted[:n], dtype=new_bt.dtype)
+            new_sl[i] = retained
+        block_table_tensor = block_table_tensor.clone()
+        seq_lens = seq_lens.clone()
+        block_table_tensor[:num_reqs].copy_(new_bt.to(block_table_tensor.device))
+        seq_lens[:num_reqs].copy_(new_sl.to(seq_lens.device))
+        return block_table_tensor, seq_lens
+
     # Note: used for model runner override.
     def _init_device_properties(self) -> None:
         """Initialize attributes from torch.cuda.get_device_properties"""
@@ -1228,6 +1300,7 @@ class GPUModelRunner(
             num_computed_tokens = req_data.num_computed_tokens[i]
             new_block_ids = req_data.new_block_ids[i]
             resumed_from_preemption = req_id in req_data.resumed_req_ids
+            refresh_block_ids = req_id in req_data.refresh_block_ids_req_ids
             num_output_tokens = req_data.num_output_tokens[i]
             req_index = self.input_batch.req_id_to_index.get(req_id)
 
@@ -1310,17 +1383,20 @@ class GPUModelRunner(
                     self.input_batch.num_tokens_no_spec[req_index] = end_idx
 
             # Update the block IDs.
-            if not resumed_from_preemption:
-                if new_block_ids is not None:
-                    # Append the new blocks to the existing block IDs.
-                    for block_ids, new_ids in zip(req_state.block_ids, new_block_ids):
-                        block_ids.extend(new_ids)
-            else:
+            if resumed_from_preemption:
                 assert req_index is None
                 assert new_block_ids is not None
                 # The request is resumed from preemption.
                 # Replace the existing block IDs with the new ones.
                 req_state.block_ids = new_block_ids
+            elif refresh_block_ids:
+                # Experimental H2O: replace full logical block table (null holes).
+                assert new_block_ids is not None
+                req_state.block_ids = new_block_ids
+            elif new_block_ids is not None:
+                # Append the new blocks to the existing block IDs.
+                for block_ids, new_ids in zip(req_state.block_ids, new_block_ids):
+                    block_ids.extend(new_ids)
 
             if req_index is None:
                 # The request is not in the persistent batch.
@@ -1341,7 +1417,11 @@ class GPUModelRunner(
 
             # Update the persistent batch.
             self.input_batch.num_computed_tokens_cpu[req_index] = num_computed_tokens
-            if new_block_ids is not None:
+            if refresh_block_ids:
+                assert new_block_ids is not None
+                self.input_batch.block_table.clear_row(req_index)
+                self.input_batch.block_table.add_row(new_block_ids, req_index)
+            elif new_block_ids is not None:
                 self.input_batch.block_table.append_row(new_block_ids, req_index)
 
             # For the last rank, we don't need to update the token_ids_cpu
@@ -2215,6 +2295,22 @@ class GPUModelRunner(
             is_prefilling=is_prefilling,
             positions=self.positions[:num_tokens_padded],
         )
+
+        if self.h2o_enabled and not for_cudagraph_capture:
+            # Attention sees compacted non-null pages; slot_mapping already used
+            # the logical (pre-compaction) block table via positions.
+            bt, sl = self._maybe_compact_h2o_attn_tables(
+                cm_base.block_table_tensor, cm_base.seq_lens, num_reqs
+            )
+            cm_base.block_table_tensor = bt
+            cm_base.seq_lens = sl
+            if cm_base._seq_lens_cpu is not None:
+                cm_base._seq_lens_cpu = sl.detach().to("cpu")
+            if cm_base.seq_lens_cpu_upper_bound is not None:
+                cm_base.seq_lens_cpu_upper_bound = sl.detach().to("cpu")
+            if num_reqs > 0:
+                cm_base.max_seq_len = int(sl[:num_reqs].max().item())
+            self._configure_h2o_score_collection(num_reqs)
 
         if self.dcp_world_size > 1:
             self.dcp_local_seq_lens.cpu[:num_reqs] = get_dcp_local_seq_lens(
@@ -4411,6 +4507,7 @@ class GPUModelRunner(
                 else None,
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
+                h2o_block_scores=self._take_h2o_block_scores(),
             )
 
         if not self.use_async_scheduling:

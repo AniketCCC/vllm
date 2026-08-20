@@ -11,6 +11,7 @@ from vllm.logger import init_logger
 from vllm.v1.core.kv_cache_coordinator import get_kv_cache_coordinator
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import KVCacheBlock
+from vllm.v1.kv_cache_eviction.h2o import H2OEvictionManager
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request
@@ -117,6 +118,10 @@ class KVCacheManager:
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        h2o_max_blocks: int | None = None,
+        h2o_recent_blocks: int = 1,
+        h2o_debug: bool = False,
+        enable_h2o: bool = False,
     ) -> None:
         self.max_model_len = max_model_len
         # When unset, fall back to `max_model_len` so the recycling-aware cap
@@ -158,6 +163,17 @@ class KVCacheManager:
         self.empty_kv_cache_blocks = KVCacheBlocks(
             tuple(() for _ in range(self.num_kv_cache_groups))
         )
+
+        # Experimental H2O eviction (block-granular baseline).
+        self.h2o_manager: H2OEvictionManager | None = None
+        self._h2o_refresh_req_ids: set[str] = set()
+        if enable_h2o:
+            assert h2o_max_blocks is not None
+            self.h2o_manager = H2OEvictionManager(
+                max_blocks=h2o_max_blocks,
+                recent_blocks=h2o_recent_blocks,
+                debug=h2o_debug,
+            )
 
     @property
     def usage(self) -> float:
@@ -400,6 +416,8 @@ class KVCacheManager:
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.
         if not self.enable_caching or delay_cache_blocks:
+            if self.h2o_manager is not None:
+                self._h2o_sync_and_maybe_evict(request.request_id)
             return self.create_kv_cache_blocks(new_blocks)
 
         # NOTE(woosuk): We want to commit (cache) up to num_local_computed_tokens
@@ -413,6 +431,10 @@ class KVCacheManager:
         )
         self.coordinator.cache_blocks(request, num_tokens_to_cache)
 
+        # Experimental H2O: after allocating, sync metadata and evict if over budget.
+        if self.h2o_manager is not None:
+            self._h2o_sync_and_maybe_evict(request.request_id)
+
         return self.create_kv_cache_blocks(new_blocks)
 
     def free(self, request: Request) -> None:
@@ -424,6 +446,47 @@ class KVCacheManager:
             request: The request to free the blocks.
         """
         self.coordinator.free(request.request_id)
+        if self.h2o_manager is not None:
+            self.h2o_manager.free(request.request_id)
+            self._h2o_refresh_req_ids.discard(request.request_id)
+
+    def apply_h2o_block_scores(
+        self, scores_by_req: dict[str, dict[int, float]]
+    ) -> None:
+        """Accumulate attention-mass scores then evict if over budget."""
+        if self.h2o_manager is None or not scores_by_req:
+            return
+        for req_id, scores in scores_by_req.items():
+            self.h2o_manager.update_scores(req_id, scores)
+            self._h2o_sync_and_maybe_evict(req_id)
+
+    def take_h2o_refresh_req_ids(self) -> set[str]:
+        """Drain request ids whose full block tables must be resent to workers."""
+        ids = self._h2o_refresh_req_ids
+        self._h2o_refresh_req_ids = set()
+        return ids
+
+    def _h2o_primary_manager(self):
+        # Apply H2O against the first KV cache group (typical single full-attn).
+        return self.coordinator.single_type_managers[0]
+
+    def _h2o_sync_and_maybe_evict(self, request_id: str) -> None:
+        assert self.h2o_manager is not None
+        mgr = self._h2o_primary_manager()
+        retained = mgr.get_retained_logical_block_ids(request_id)
+        self.h2o_manager.sync_retained_blocks(request_id, retained)
+        if not retained:
+            return
+        # Never evict the newest retained block (currently written / writing).
+        protect = {retained[-1]}
+        decision = self.h2o_manager.plan_eviction(
+            request_id, protect_logical_ids=protect
+        )
+        if decision is None or not decision.victims:
+            return
+        for type_mgr in self.coordinator.single_type_managers:
+            type_mgr.evict_logical_blocks(request_id, decision.victims)
+        self._h2o_refresh_req_ids.add(request_id)
 
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int

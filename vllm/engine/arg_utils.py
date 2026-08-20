@@ -501,6 +501,10 @@ class EngineArgs:
     offload_params: set[str] = get_field(PrefetchOffloadConfig, "offload_params")
     gpu_memory_utilization: float = CacheConfig.gpu_memory_utilization
     kv_cache_memory_bytes: int | None = CacheConfig.kv_cache_memory_bytes
+    kv_eviction_policy: str = CacheConfig.kv_eviction_policy
+    h2o_max_blocks: int | None = CacheConfig.h2o_max_blocks
+    h2o_recent_blocks: int = CacheConfig.h2o_recent_blocks
+    h2o_debug: bool = CacheConfig.h2o_debug
     max_num_batched_tokens: int | None = None
     max_num_partial_prefills: int = SchedulerConfig.max_num_partial_prefills
     max_long_partial_prefills: int = SchedulerConfig.max_long_partial_prefills
@@ -1116,6 +1120,16 @@ class EngineArgs:
         cache_group.add_argument(
             "--kv-offloading-backend", **cache_kwargs["kv_offloading_backend"]
         )
+        cache_group.add_argument(
+            "--kv-eviction-policy", **cache_kwargs["kv_eviction_policy"]
+        )
+        cache_group.add_argument(
+            "--h2o-max-blocks", **cache_kwargs["h2o_max_blocks"]
+        )
+        cache_group.add_argument(
+            "--h2o-recent-blocks", **cache_kwargs["h2o_recent_blocks"]
+        )
+        cache_group.add_argument("--h2o-debug", **cache_kwargs["h2o_debug"])
 
         # Model weight offload related configs
         offload_kwargs = get_kwargs(OffloadConfig)
@@ -1697,6 +1711,10 @@ class EngineArgs:
             mamba_cache_mode=self.mamba_cache_mode,
             kv_offloading_size=self.kv_offloading_size,
             kv_offloading_backend=self.kv_offloading_backend,
+            kv_eviction_policy=self.kv_eviction_policy,  # type: ignore[arg-type]
+            h2o_max_blocks=self.h2o_max_blocks,
+            h2o_recent_blocks=self.h2o_recent_blocks,
+            h2o_debug=self.h2o_debug,
         )
 
         if resolved_cache_dtype.startswith("turboquant_"):

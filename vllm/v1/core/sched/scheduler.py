@@ -237,6 +237,10 @@ class Scheduler(SchedulerInterface):
             pcp_world_size=self.pcp_world_size,
             hash_block_size=hash_block_size,
             metrics_collector=self.kv_metrics_collector,
+            enable_h2o=self.cache_config.h2o_enabled,
+            h2o_max_blocks=self.cache_config.h2o_max_blocks,
+            h2o_recent_blocks=self.cache_config.h2o_recent_blocks,
+            h2o_debug=self.cache_config.h2o_debug,
         )
         # Bind GPU block pool to the KV connector. This must happen after
         # kv_cache_manager is constructed so block_pool is available.
@@ -1055,6 +1059,8 @@ class Scheduler(SchedulerInterface):
         num_computed_tokens: list[int] = []
         num_output_tokens: list[int] = []
         resumed_req_ids = set()
+        h2o_refresh = self.kv_cache_manager.take_h2o_refresh_req_ids()
+        refresh_block_ids_req_ids: set[str] = set()
 
         num_running_reqs = len(running_reqs)
         for idx, req in enumerate(itertools.chain(running_reqs, resumed_reqs)):
@@ -1082,9 +1088,14 @@ class Scheduler(SchedulerInterface):
                 resumed_req_ids.add(req_id)
             if not scheduled_in_prev_step:
                 all_token_ids[req_id] = req.all_token_ids.copy()
-            new_block_ids.append(
-                req_to_new_blocks[req_id].get_block_ids(allow_none=True)
-            )
+            if req_id in h2o_refresh:
+                # Full logical block table (including null holes) after H2O eviction.
+                refresh_block_ids_req_ids.add(req_id)
+                new_block_ids.append(self.kv_cache_manager.get_block_ids(req_id))
+            else:
+                new_block_ids.append(
+                    req_to_new_blocks[req_id].get_block_ids(allow_none=True)
+                )
             num_computed_tokens.append(req.num_computed_tokens)
             num_output_tokens.append(
                 req.num_output_tokens + req.num_output_placeholders
@@ -1098,6 +1109,7 @@ class Scheduler(SchedulerInterface):
             new_block_ids=new_block_ids,
             num_computed_tokens=num_computed_tokens,
             num_output_tokens=num_output_tokens,
+            refresh_block_ids_req_ids=refresh_block_ids_req_ids,
         )
 
     def _try_schedule_encoder_inputs(
@@ -1300,6 +1312,15 @@ class Scheduler(SchedulerInterface):
         num_nans_in_logits = model_runner_output.num_nans_in_logits
         kv_connector_output = model_runner_output.kv_connector_output
         cudagraph_stats = model_runner_output.cudagraph_stats
+
+        # Experimental H2O: apply attention-mass scores and maybe evict.
+        if (
+            self.cache_config.h2o_enabled
+            and model_runner_output.h2o_block_scores
+        ):
+            self.kv_cache_manager.apply_h2o_block_scores(
+                model_runner_output.h2o_block_scores
+            )
 
         perf_stats: PerfStats | None = None
         if self.perf_metrics and self.perf_metrics.is_enabled():

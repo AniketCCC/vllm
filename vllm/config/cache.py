@@ -36,6 +36,7 @@ MambaDType = Literal["auto", "float32", "float16"]
 MambaCacheMode = Literal["all", "align", "none"]
 PrefixCachingHashAlgo = Literal["sha256", "sha256_cbor", "xxhash", "xxhash_cbor"]
 KVOffloadingBackend = Literal["native", "lmcache"]
+KVEvictionPolicy = Literal["none", "h2o"]
 
 
 @config
@@ -175,6 +176,20 @@ class CacheConfig:
     'native' (vLLM native CPU offloading), 'lmcache'.
     KV offloading is only activated when kv_offloading_size is set."""
 
+    kv_eviction_policy: KVEvictionPolicy = "none"
+    """Experimental per-request KV eviction policy.
+    - "none": stock vLLM behavior (default).
+    - "h2o": block-granular Heavy-Hitter Oracle (H2O) baseline. See
+      docs/h2o_baseline_notes.md. Not for production."""
+    h2o_max_blocks: int | None = Field(default=None, gt=0)
+    """Max retained KV blocks per request when kv_eviction_policy=h2o.
+    Required when H2O is enabled."""
+    h2o_recent_blocks: int = Field(default=1, ge=0)
+    """Number of most-recent retained blocks protected from H2O eviction.
+    Must satisfy 0 <= h2o_recent_blocks < h2o_max_blocks."""
+    h2o_debug: bool = False
+    """If True, log H2O victim selection details when an eviction occurs."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
@@ -205,6 +220,12 @@ class CacheConfig:
             "num_cpu_blocks",
             # WIP feature toggle not impacting compiled graph shape
             "kv_sharing_fast_prefill",
+            # Experimental eviction policy (runtime metadata; scores collected
+            # outside the compiled FA graph).
+            "kv_eviction_policy",
+            "h2o_max_blocks",
+            "h2o_recent_blocks",
+            "h2o_debug",
         }
 
         from vllm.config.utils import get_hash_factors, hash_factors
@@ -266,3 +287,34 @@ class CacheConfig:
                 str(cache_dtype),
             )
         return cache_dtype
+
+    @model_validator(mode="after")
+    def _validate_h2o_eviction(self) -> "CacheConfig":
+        if self.kv_eviction_policy == "none":
+            return self
+        if self.kv_eviction_policy != "h2o":
+            raise ValueError(
+                f"Unknown kv_eviction_policy={self.kv_eviction_policy!r}. "
+                "Supported: 'none', 'h2o'."
+            )
+        if self.h2o_max_blocks is None:
+            raise ValueError(
+                "h2o_max_blocks must be set when kv_eviction_policy='h2o'."
+            )
+        if not (0 <= self.h2o_recent_blocks < self.h2o_max_blocks):
+            raise ValueError(
+                "Require 0 <= h2o_recent_blocks < h2o_max_blocks, "
+                f"got h2o_recent_blocks={self.h2o_recent_blocks}, "
+                f"h2o_max_blocks={self.h2o_max_blocks}."
+            )
+        if self.enable_prefix_caching:
+            logger.warning(
+                "Disabling prefix caching because experimental H2O KV "
+                "eviction is enabled (incompatible with block hashing)."
+            )
+            object.__setattr__(self, "enable_prefix_caching", False)
+        return self
+
+    @property
+    def h2o_enabled(self) -> bool:
+        return self.kv_eviction_policy == "h2o"
