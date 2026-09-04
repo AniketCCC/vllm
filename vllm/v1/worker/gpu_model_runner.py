@@ -412,6 +412,7 @@ class GPUModelRunner(
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
         self.h2o_enabled = bool(self.cache_config.h2o_enabled)
+        self.h2o_collect_scores = bool(self.cache_config.h2o_collect_scores)
 
         model_config = self.model_config
         cache_config = self.cache_config
@@ -1055,7 +1056,7 @@ class GPUModelRunner(
         from vllm.v1.attention.ops.h2o_score_collector import get_h2o_score_accumulator
 
         acc = get_h2o_score_accumulator()
-        if not self.h2o_enabled or num_reqs <= 0:
+        if not self.h2o_collect_scores or num_reqs <= 0:
             acc.enabled = False
             acc.reset()
             return

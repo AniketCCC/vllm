@@ -1,0 +1,87 @@
+{
+  "run_id": "timing_full_kv_1.0",
+  "workload": "timing",
+  "policy": "full_kv",
+  "timestamp_utc": "2026-08-31T13:26:44Z",
+  "git_commit": "d1d7f48e5b35374b5e0b63b0d3a0e5fc20160c9c",
+  "git_dirty": true,
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "dtype": "bfloat16",
+  "gpu_name": "NVIDIA H100 NVL",
+  "torch_version": "2.11.0+cu130",
+  "cuda_version": "13.0",
+  "block_size": 16,
+  "seed": 42,
+  "temperature": 0.0,
+  "max_tokens": 128,
+  "h2o_recent_blocks": null,
+  "retention_target_fraction": 1.0,
+  "max_model_len": 10240,
+  "gpu_memory_utilization": 0.35,
+  "repetitions": 5,
+  "warmups": 1,
+  "prompt_tokens": 2048,
+  "full_cache_blocks_est": 136,
+  "h2o_max_blocks": null,
+  "retention_actual_fraction": 1.0,
+  "kv_arena_blocks": 159796,
+  "page_size_bytes": 8192,
+  "metrics": {
+    "ttft_ms": {
+      "mean": 20.19938460434787,
+      "std": 4.601762979222458,
+      "n": 5
+    },
+    "prefill_latency_ms": {
+      "mean": 20.19938460434787,
+      "std": 4.601762979222458,
+      "n": 5
+    },
+    "decode_latency_ms": {
+      "mean": 1727.1780955954455,
+      "std": 14.297394125215957,
+      "n": 5
+    },
+    "inter_token_latency_ms": {
+      "mean": 13.599827524373588,
+      "std": 0.1125779064977635,
+      "n": 5
+    },
+    "e2e_latency_s": {
+      "mean": 1.7473774801997934,
+      "std": 0.017750529805816963,
+      "n": 5
+    },
+    "decode_tokens_per_sec": {
+      "mean": 73.53437045706379,
+      "std": 0.6079907618293919,
+      "n": 5
+    },
+    "overall_tokens_per_sec": {
+      "mean": 73.25870464751196,
+      "std": 0.7472474510862731,
+      "n": 5
+    }
+  },
+  "generated_tokens": 128,
+  "peak_occupied_kv_blocks": 131,
+  "mean_occupied_kv_blocks": 126.67309259016773,
+  "peak_occupied_kv_bytes": 1073152,
+  "output_text_sample": " residency, and attention sparsity in detail. The study of efficient transformer inference considers memory bandwidth, c",
+  "eviction": {
+    "instrumentation_available": false,
+    "num_eviction_events": 0,
+    "num_blocks_evicted": 0,
+    "peak_retained_blocks": null,
+    "max_block_count_before_evict": null,
+    "budget": null,
+    "budget_respected": null,
+    "policy": null
+  },
+  "eviction_trace_tail": [],
+  "kv_free_blocks_after": 159795,
+  "kv_used_blocks_after": 1,
+  "blocks_returned_after_run": true,
+  "cuda_mem_allocated_mb": 33136.62109375,
+  "cuda_mem_reserved_mb": 33294.0
+}

@@ -36,7 +36,7 @@ MambaDType = Literal["auto", "float32", "float16"]
 MambaCacheMode = Literal["all", "align", "none"]
 PrefixCachingHashAlgo = Literal["sha256", "sha256_cbor", "xxhash", "xxhash_cbor"]
 KVOffloadingBackend = Literal["native", "lmcache"]
-KVEvictionPolicy = Literal["none", "h2o"]
+KVEvictionPolicy = Literal["none", "h2o", "recent"]
 
 
 @config
@@ -179,8 +179,9 @@ class CacheConfig:
     kv_eviction_policy: KVEvictionPolicy = "none"
     """Experimental per-request KV eviction policy.
     - "none": stock vLLM behavior (default).
-    - "h2o": block-granular Heavy-Hitter Oracle (H2O) baseline. See
-      docs/h2o_baseline_notes.md. Not for production."""
+    - "h2o": block-granular Heavy-Hitter Oracle (H2O) baseline.
+    - "recent": block-granular keep-recent eviction (naive comparator).
+    See docs/h2o_baseline_notes.md. Not for production."""
     h2o_max_blocks: int | None = Field(default=None, gt=0)
     """Max retained KV blocks per request when kv_eviction_policy=h2o.
     Required when H2O is enabled."""
@@ -292,10 +293,10 @@ class CacheConfig:
     def _validate_h2o_eviction(self) -> "CacheConfig":
         if self.kv_eviction_policy == "none":
             return self
-        if self.kv_eviction_policy != "h2o":
+        if self.kv_eviction_policy not in ("h2o", "recent"):
             raise ValueError(
                 f"Unknown kv_eviction_policy={self.kv_eviction_policy!r}. "
-                "Supported: 'none', 'h2o'."
+                "Supported: 'none', 'h2o', 'recent'."
             )
         if self.h2o_max_blocks is None:
             raise ValueError(
@@ -317,4 +318,8 @@ class CacheConfig:
 
     @property
     def h2o_enabled(self) -> bool:
+        return self.kv_eviction_policy in ("h2o", "recent")
+
+    @property
+    def h2o_collect_scores(self) -> bool:
         return self.kv_eviction_policy == "h2o"

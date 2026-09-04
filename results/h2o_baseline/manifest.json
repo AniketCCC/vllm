@@ -1,0 +1,99 @@
+{
+  "run_name": "2026-08-31",
+  "timestamp_utc": "2026-08-31T13:06:33Z",
+  "git_commit": "d1d7f48e5b35374b5e0b63b0d3a0e5fc20160c9c",
+  "git_dirty": true,
+  "gpu": "NVIDIA H100 NVL",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "args": {
+    "stages": [
+      "control",
+      "retrieval",
+      "timing",
+      "length"
+    ],
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "run_name": "2026-08-31",
+    "block_size": 16,
+    "h2o_recent_blocks": 4,
+    "dtype": "bfloat16",
+    "seed": 42,
+    "gpu_memory_utilization": 0.35,
+    "max_model_len": 10240,
+    "fractions": [
+      1.0,
+      0.75,
+      0.5,
+      0.25,
+      0.125
+    ],
+    "retrieval_context": 2048,
+    "retrieval_max_tokens": 24,
+    "positions": [
+      0.05,
+      0.25,
+      0.5,
+      0.75,
+      0.95
+    ],
+    "timing_prompt_tokens": 2048,
+    "timing_max_tokens": 128,
+    "timing_fractions": [
+      1.0,
+      0.75,
+      0.5,
+      0.25
+    ],
+    "repetitions": 5,
+    "warmups": 1,
+    "lengths": [
+      512,
+      1024,
+      2048,
+      4096,
+      8192
+    ],
+    "length_fractions": [
+      0.75,
+      0.5,
+      0.25
+    ],
+    "length_max_tokens": 128,
+    "length_repetitions": 3,
+    "timeout": 5400
+  },
+  "command": [
+    "/fast-lab-share/aniketc2/vllm/benchmarks/h2o/run_benchmarks.py",
+    "--run-name",
+    "2026-08-31",
+    "--model",
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "--max-model-len",
+    "10240",
+    "--stages",
+    "control",
+    "retrieval",
+    "timing",
+    "length",
+    "--fractions",
+    "1.0",
+    "0.75",
+    "0.5",
+    "0.25",
+    "0.125",
+    "--retrieval-context",
+    "2048",
+    "--timing-prompt-tokens",
+    "2048",
+    "--repetitions",
+    "5",
+    "--lengths",
+    "512",
+    "1024",
+    "2048",
+    "4096",
+    "8192",
+    "--timeout",
+    "5400"
+  ]
+}

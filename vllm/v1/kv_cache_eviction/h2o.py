@@ -9,6 +9,7 @@ mixed-precision compression or novel eviction algorithms.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from vllm.logger import init_logger
 
@@ -122,6 +123,39 @@ def select_h2o_victims(
     return victims
 
 
+def select_recent_victims(
+    state: H2ORequestState,
+    max_blocks: int,
+    recent_blocks: int,
+    *,
+    protect_logical_ids: set[int] | None = None,
+) -> list[int]:
+    """Evict oldest eligible blocks (recent-window naive baseline)."""
+    if max_blocks <= 0:
+        raise ValueError(f"h2o_max_blocks must be > 0, got {max_blocks}")
+    if not (0 <= recent_blocks < max_blocks):
+        raise ValueError(
+            f"Require 0 <= h2o_recent_blocks < h2o_max_blocks, "
+            f"got recent={recent_blocks}, max={max_blocks}"
+        )
+
+    protect = set(protect_logical_ids or ())
+    retained = state.retained_logical_ids_by_recency()
+    excess = len(retained) - max_blocks
+    if excess <= 0:
+        return []
+
+    protected_recent = set(retained[-recent_blocks:]) if recent_blocks > 0 else set()
+    protected = protected_recent | protect
+    candidates = [lid for lid in retained if lid not in protected]
+    candidates.sort(key=lambda lid: state.blocks[lid].order)
+    if len(candidates) < excess:
+        victims = candidates
+    else:
+        victims = candidates[:excess]
+    return victims
+
+
 @dataclass
 class H2OEvictionDecision:
     request_id: str
@@ -141,6 +175,7 @@ class H2OEvictionManager:
         recent_blocks: int,
         *,
         debug: bool = False,
+        use_h2o_scores: bool = True,
     ) -> None:
         if not (0 <= recent_blocks < max_blocks):
             raise ValueError(
@@ -150,7 +185,9 @@ class H2OEvictionManager:
         self.max_blocks = max_blocks
         self.recent_blocks = recent_blocks
         self.debug = debug
+        self.use_h2o_scores = use_h2o_scores
         self._states: dict[str, H2ORequestState] = {}
+        self.trace_events: list[dict[str, Any]] = []
 
     def get_or_create(self, request_id: str) -> H2ORequestState:
         state = self._states.get(request_id)
@@ -197,11 +234,20 @@ class H2OEvictionManager:
         candidates = [lid for lid in retained if lid not in protected]
         candidate_scores = {lid: state.blocks[lid].h2o_score for lid in candidates}
 
-        victims = select_h2o_victims(
-            state,
-            self.max_blocks,
-            self.recent_blocks,
-            protect_logical_ids=protect_logical_ids,
+        victims = (
+            select_h2o_victims(
+                state,
+                self.max_blocks,
+                self.recent_blocks,
+                protect_logical_ids=protect_logical_ids,
+            )
+            if self.use_h2o_scores
+            else select_recent_victims(
+                state,
+                self.max_blocks,
+                self.recent_blocks,
+                protect_logical_ids=protect_logical_ids,
+            )
         )
         if not victims:
             return None
@@ -228,5 +274,17 @@ class H2OEvictionManager:
                 decision.candidate_scores,
                 decision.victims,
                 decision.retained_block_ids,
+            )
+        if self.debug or self.trace_events is not None:
+            self.trace_events.append(
+                {
+                    "request_id": decision.request_id,
+                    "current_block_count": decision.current_block_count,
+                    "protected_recent_blocks": decision.protected_recent_blocks,
+                    "candidate_scores": decision.candidate_scores,
+                    "victims": decision.victims,
+                    "retained_block_ids": decision.retained_block_ids,
+                    "policy": "h2o" if self.use_h2o_scores else "recent",
+                }
             )
         return decision

@@ -241,6 +241,7 @@ class Scheduler(SchedulerInterface):
             h2o_max_blocks=self.cache_config.h2o_max_blocks,
             h2o_recent_blocks=self.cache_config.h2o_recent_blocks,
             h2o_debug=self.cache_config.h2o_debug,
+            h2o_use_scores=self.cache_config.h2o_collect_scores,
         )
         # Bind GPU block pool to the KV connector. This must happen after
         # kv_cache_manager is constructed so block_pool is available.
@@ -1315,7 +1316,7 @@ class Scheduler(SchedulerInterface):
 
         # Experimental H2O: apply attention-mass scores and maybe evict.
         if (
-            self.cache_config.h2o_enabled
+            self.cache_config.h2o_collect_scores
             and model_runner_output.h2o_block_scores
         ):
             self.kv_cache_manager.apply_h2o_block_scores(

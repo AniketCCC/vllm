@@ -122,6 +122,7 @@ class KVCacheManager:
         h2o_recent_blocks: int = 1,
         h2o_debug: bool = False,
         enable_h2o: bool = False,
+        h2o_use_scores: bool = True,
     ) -> None:
         self.max_model_len = max_model_len
         # When unset, fall back to `max_model_len` so the recycling-aware cap
@@ -173,6 +174,7 @@ class KVCacheManager:
                 max_blocks=h2o_max_blocks,
                 recent_blocks=h2o_recent_blocks,
                 debug=h2o_debug,
+                use_h2o_scores=h2o_use_scores,
             )
 
     @property
